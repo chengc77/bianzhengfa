@@ -158,7 +158,7 @@ async function scrapeMode() {
   try {
     // 1. 打开主页, 滚动加载最新视频列表
     await page.goto(USER_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await sleep(4000);
+    await sleep(IS_CI ? 8000 : 4000);
 
     const logged = await isLoggedIn(browser);
     log(`主页已打开, 登录态: ${logged ? '有' : '无(未登录也能看公开视频)'}`);
@@ -179,11 +179,22 @@ async function scrapeMode() {
       await page.evaluate(() => window.scrollBy(0, 2400));
       await sleep(2500);
       log(`滚动第 ${r + 1} 轮: 作品列表发现 ${ids.length} 个视频`);
-      if (r > 0 && ids.length === before) break;
+      if (r > 0 && ids.length === before && ids.length > 0) break;
     }
     ids = [...new Set(ids)];
     if (!ids.length) {
-      // 兜底: 未登录/风控时 DOM 结构可能不同, 全页面找视频链接 (后续有作者校验兜底防误抓)
+      // 诊断: 登录/风控异常时页面形态不明, dump 关键信息定位
+      const diag = await page.evaluate(() => ({
+        url: location.href,
+        title: document.title,
+        videoLinks: document.querySelectorAll('a[href*="/video/"]').length,
+        e2eNodes: document.querySelectorAll('[data-e2e]').length,
+        postList: !!document.querySelector('[data-e2e="user-post-list"]'),
+        body: document.body ? document.body.innerText.replace(/\s+/g, ' ').slice(0, 300) : ''
+      }));
+      log(`诊断: url=${diag.url} | title=${diag.title} | videoLinks=${diag.videoLinks} | e2eNodes=${diag.e2eNodes} | postList=${diag.postList}`);
+      log(`诊断 body: ${diag.body}`);
+      // 兜底: 页面结构不同时全页面找视频链接 (后续有作者校验兜底防误抓)
       ids = await page.evaluate(() => {
         const out = [];
         document.querySelectorAll('a[href*="/video/"]').forEach(a => {
@@ -193,17 +204,6 @@ async function scrapeMode() {
         return out;
       });
       ids = [...new Set(ids)];
-      if (!ids.length) {
-        const diag = await page.evaluate(() => ({
-          url: location.href,
-          title: document.title,
-          videoLinks: document.querySelectorAll('a[href*="/video/"]').length,
-          e2eNodes: document.querySelectorAll('[data-e2e]').length,
-          body: document.body ? document.body.innerText.replace(/\s+/g, ' ').slice(0, 260) : ''
-        }));
-        log(`诊断: url=${diag.url} | title=${diag.title} | videoLinks=${diag.videoLinks} | e2eNodes=${diag.e2eNodes}`);
-        log(`诊断 body: ${diag.body}`);
-      }
     }
     const newIds = ids.filter(id => !known.has(id)).slice(0, MAX_NEW_PER_RUN);
     log(`共 ${ids.length} 个链接, 其中新视频 ${newIds.length} 个: ${newIds.join(', ') || '(无)'}`);
