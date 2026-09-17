@@ -172,6 +172,29 @@ async function scrapeMode() {
       if (r > 0 && ids.length === before) break;
     }
     ids = [...new Set(ids)];
+    if (!ids.length) {
+      // 兜底: 未登录/风控时 DOM 结构可能不同, 全页面找视频链接 (后续有作者校验兜底防误抓)
+      ids = await page.evaluate(() => {
+        const out = [];
+        document.querySelectorAll('a[href*="/video/"]').forEach(a => {
+          const m = a.getAttribute('href').match(/\/video\/(\d+)/);
+          if (m) out.push(m[1]);
+        });
+        return out;
+      });
+      ids = [...new Set(ids)];
+      if (!ids.length) {
+        const diag = await page.evaluate(() => ({
+          url: location.href,
+          title: document.title,
+          videoLinks: document.querySelectorAll('a[href*="/video/"]').length,
+          e2eNodes: document.querySelectorAll('[data-e2e]').length,
+          body: document.body ? document.body.innerText.replace(/\s+/g, ' ').slice(0, 260) : ''
+        }));
+        log(`诊断: url=${diag.url} | title=${diag.title} | videoLinks=${diag.videoLinks} | e2eNodes=${diag.e2eNodes}`);
+        log(`诊断 body: ${diag.body}`);
+      }
+    }
     const newIds = ids.filter(id => !known.has(id)).slice(0, MAX_NEW_PER_RUN);
     log(`共 ${ids.length} 个链接, 其中新视频 ${newIds.length} 个: ${newIds.join(', ') || '(无)'}`);
 
