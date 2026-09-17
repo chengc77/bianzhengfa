@@ -1,0 +1,12 @@
+# 本地登录态含抖音 cookie, 严禁上传
+scraper/.profile/
+
+# 依赖
+scraper/node_modules/
+
+# 日志(CI 控制台已可见, 不必入库)
+scraper/scrape.log
+
+# 系统杂项
+Thumbs.db
+.DS_Store

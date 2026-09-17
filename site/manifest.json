@@ -1,0 +1,14 @@
+{
+  "name": "辩证法交易",
+  "short_name": "辩证法交易",
+  "description": "模型先生辩证交易心法与视频存档",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f8f5ee",
+  "theme_color": "#a83232",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
