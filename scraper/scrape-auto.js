@@ -31,7 +31,7 @@ const MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleW
 const SCROLL_ROUNDS = 4;      // 主页滚动轮数(加载最新视频)
 const MAX_NEW_PER_RUN = 30;   // 单次最多抓取新视频数
 const COMMENT_SCROLLS = 3;    // 评论区滚动次数(多加载一些评论)
-const DELETE_CHECK_N = 15;    // 每轮抽查最近多少条存量视频做删除检测
+const DELETE_CHECK_N = 12;    // 每轮轮换检测多少条存量视频(删除检测+转录直链刷新)
 const CODE_START = 1001;      // 视频短编号起始值
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -490,8 +490,8 @@ async function scrapeMode() {
       uniq.sort((a, b) => String(b.publishTime || '').localeCompare(String(a.publishTime || '')));
 
       fs.writeFileSync(AUTO_JSON, JSON.stringify(uniq, null, 1), 'utf8');
-      const js = '// videos-auto.js - 自动抓取的新视频(由 scraper/scrape-auto.js 生成, 勿手改)\n'
-        + 'window.MOXING_VIDEOS = window.MOXING_VIDEOS.concat(' + JSON.stringify(uniq) + ');\n';
+      const js = '// videos-auto.js - 视频统一存档(由 scraper/scrape-auto.js 生成, 勿手改)\n'
+        + 'window.MOXING_VIDEOS = (window.MOXING_VIDEOS || []).concat(' + JSON.stringify(uniq) + ');\n';
       fs.writeFileSync(AUTO_JS, js, 'utf8');
 
       // 更新 video-urls.json (新 id 插到最前, 保持去重)
@@ -505,11 +505,14 @@ async function scrapeMode() {
       log('本轮无新视频入库。');
     }
 
-    // 4. 删除追踪: 抽查最近 N 条存量视频(已标删除的跳过), 顺带刷新转录直链
+    // 4. 删除追踪: 每轮选最久未检测的 N 条(删除的永久跳过), 顺带刷新转录直链
     const storeNow = readJson(AUTO_JSON, []);
     const candidates = storeNow
-      .filter(v => v.id && !(statusMap[String(v.id)] || {}).deleted)
-      .slice(0, DELETE_CHECK_N);
+      .map(v => ({ v, t: (statusMap[String(v.id)] || {}).checkedAt || (statusMap[String(v.id)] || {}).at || '' }))
+      .filter(o => o.v.id && !(statusMap[String(o.v.id)] || {}).deleted)
+      .sort((a, b) => a.t.localeCompare(b.t))
+      .slice(0, DELETE_CHECK_N)
+      .map(o => o.v);
     if (candidates.length) {
       log(`删除检测: 抽查 ${candidates.length} 条存量视频...`);
       let deletedFound = 0;
@@ -535,8 +538,8 @@ async function scrapeMode() {
             statusMap[sid] = { deleted: true, prohibited: detailInfo.prohibited, at: new Date().toISOString().slice(0, 10) };
             deletedFound++;
             log(`  ⚠ 视频 ${sid} 已${detailInfo.prohibited ? '封禁' : '删除'}`);
-          } else if (!prev.checkedAt) {
-            statusMap[sid] = { deleted: false, checkedAt: new Date().toISOString().slice(0, 10) };
+          } else if (!detailInfo.deleted) {
+            statusMap[sid] = Object.assign({}, prev, { deleted: false, checkedAt: new Date().toISOString().slice(0, 10) });
           }
           // 缺转录稿 + 拿到新鲜直链 → 补入转录队列
           if (detailInfo.playUrl && !v.transcript && !transQueue.some(q => q.id === v.id)) {

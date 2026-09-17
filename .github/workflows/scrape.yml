@@ -50,8 +50,11 @@ jobs:
             ~/.cache/pip
           key: whisper-base-py311-v1
 
-      - name: 安装 faster-whisper (ffmpeg 已预装于 runner)
-        run: pip install --upgrade faster-whisper
+      - name: 安装 faster-whisper + ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --upgrade faster-whisper
 
       - name: 语音转录
         working-directory: scraper
