@@ -20,6 +20,9 @@ const PROFILE_DIR = path.join(__dirname, '.profile');
 const LOG_FILE = path.join(__dirname, 'scrape.log');
 
 const USER_URL = 'https://www.douyin.com/user/MS4wLjABAAAAK713M9d8PGNb_WiMYf7yKhOI5y60H4uELJK2guDjJT0';
+const SEC_UID = 'MS4wLjABAAAAK713M9d8PGNb_WiMYf7yKhOI5y60H4uELJK2guDjJT0';
+const SHARE_URL = 'https://www.iesdouyin.com/share/user/' + SEC_UID;
+const MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
 const SCROLL_ROUNDS = 4;      // 主页滚动轮数(加载最新视频)
 const MAX_NEW_PER_RUN = 30;   // 单次最多抓取新视频数
 const COMMENT_SCROLLS = 3;    // 评论区滚动次数(多加载一些评论)
@@ -73,7 +76,9 @@ async function openScrapeBrowser() {
     const ctx = await b.newContext({
       viewport: { width: 1400, height: 900 },
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      locale: 'zh-CN'
+      locale: 'zh-CN',
+      timezoneId: 'Asia/Shanghai',
+      extraHTTPHeaders: { 'Accept-Language': 'zh-CN,zh;q=0.9' }
     });
     // 注入登录态 (GitHub Secret DOUYIN_COOKIES, 由本地 scraper/push-cookies.js 生成更新)
     if (process.env.DOUYIN_COOKIES) {
@@ -194,7 +199,38 @@ async function scrapeMode() {
       }));
       log(`诊断: url=${diag.url} | title=${diag.title} | videoLinks=${diag.videoLinks} | e2eNodes=${diag.e2eNodes} | postList=${diag.postList}`);
       log(`诊断 body: ${diag.body}`);
-      // 兜底: 页面结构不同时全页面找视频链接 (后续有作者校验兜底防误抓)
+      // 兜底1: 移动分享页 + 拦截 reflow API(无签名 GET 接口)拿作品列表, 临时切手机 UA
+      try {
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send('Emulation.setUserAgentOverride', { userAgent: MOBILE_UA });
+        const posts = [];
+        const onResponse = async resp => {
+          try {
+            if (!resp.url().includes('/web/api/v2/aweme/post/')) return;
+            const j = await resp.json();
+            for (const a of (j.aweme_list || j.post_list || [])) {
+              const id = a.aweme_id || a.awemeId || a.aweme_id_str;
+              if (id) posts.push(String(id));
+            }
+          } catch (e) { /* 忽略非 JSON 响应 */ }
+        };
+        page.on('response', onResponse);
+        await page.goto(SHARE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await sleep(8000);
+        for (let i = 0; i < 3; i++) {
+          await page.evaluate(() => window.scrollBy(0, 2000));
+          await sleep(2000);
+        }
+        page.off('response', onResponse);
+        await cdp.send('Emulation.clearUserAgentOverride').catch(() => {});
+        ids = [...new Set(posts)];
+        log(`分享页 reflow API: 发现 ${ids.length} 个作品 id`);
+      } catch (e) {
+        log('分享页失败: ' + (e && e.message ? e.message.slice(0, 100) : e));
+      }
+    }
+    if (!ids.length) {
+      // 兜底2: 页面任意位置找视频链接 (后续有作者校验兜底防误抓)
       ids = await page.evaluate(() => {
         const out = [];
         document.querySelectorAll('a[href*="/video/"]').forEach(a => {
