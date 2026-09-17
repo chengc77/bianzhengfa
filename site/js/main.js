@@ -249,12 +249,12 @@
     const totalComments = vids.reduce((s, v) => s + (v.comments ? v.comments.length : 0), 0);
 
     sec.appendChild(el("h2", null, `<span class="chap-mark">档</span> 视频存档 <span class="archive-count">${vids.length} 条视频 · ${totalComments} 条评论</span>`));
-    sec.appendChild(el("p", "intro", "已抓取的视频与评论区互动，按发布时间倒序。点击卡片展开评论，作者回复以朱红标出。"));
+    sec.appendChild(el("p", "intro", "已抓取的视频与评论区互动，按发布时间倒序。支持编号(如 #1001)、文案、口播转录、评论全文搜索；作者回复与博主赞过以朱红标出，已删除视频灰显留档。"));
 
     const searchWrap = el("div", "archive-search");
     const input = document.createElement("input");
     input.type = "text";
-    input.placeholder = "搜索视频文案或评论关键词…";
+    input.placeholder = "搜编号 #1001、文案、口播转录或评论…";
     searchWrap.appendChild(input);
     sec.appendChild(searchWrap);
 
@@ -263,10 +263,18 @@
 
     function renderList() {
       const kw = input.value.trim().toLowerCase();
+      const CODES = window.MOXING_CODES || {};
+      const STATUS = window.MOXING_STATUS || {};
       const shown = kw
-        ? vids.filter(v =>
-            String(v.desc || "").toLowerCase().includes(kw) ||
-            (v.comments || []).some(c => (String(c.user || "") + String(c.content || "")).toLowerCase().includes(kw)))
+        ? vids.filter(v => {
+            const sid = String(v.id);
+            const code = CODES[sid] ? "#" + CODES[sid] : "";
+            return (code + " " + String(v.desc || "") + " " + String(v.transcript || "")).toLowerCase().includes(kw) ||
+              (v.comments || []).some(c =>
+                (String(c.user || "") + String(c.content || "") +
+                  (c.replies || []).map(r => String(r.user || "") + String(r.content || "")).join(" "))
+                  .toLowerCase().includes(kw));
+          })
         : vids;
       list.innerHTML = "";
       if (!shown.length) {
@@ -274,21 +282,58 @@
         return;
       }
       shown.forEach(v => {
+        const sid = String(v.id);
         const cm = v.comments || [];
-        // 作者回复计数: 主评论或子回复中 isAuthor 为 true 的(兼容旧数据用用户名匹配)
+        const st = STATUS[sid] || {};
+        const code = CODES[sid];
+        // 作者回复/博主点赞计数: isAuthor 精确, 兼容旧数据用户名匹配
         const isAuth = c => c.isAuthor || /模型先生/.test(String(c.user));
-        const authorReplies = cm.reduce((s, c) => s + (isAuth(c) ? 1 : 0) + ((c.replies || []).filter(isAuth).length), 0);
-        const card = el("div", "video-card");
+        let authorReplies = 0, authorDiggs = 0;
+        cm.forEach(c => {
+          if (isAuth(c)) authorReplies++;
+          if (c.authorDigged) authorDiggs++;
+          (c.replies || []).forEach(r => {
+            if (isAuth(r)) authorReplies++;
+            if (r.authorDigged) authorDiggs++;
+          });
+        });
+        const chapters = v.chapters || [];
+        const transcript = v.transcript || "";
+
+        const card = el("div", "video-card" + (st.deleted ? " is-deleted" : ""));
         const head = el("div", "video-head");
         head.innerHTML = `
-          <div class="video-desc">${esc(v.desc || "（无文案）")}</div>
+          <div class="video-desc">
+            ${code ? `<span class="v-code">#${code}</span>` : ""}
+            ${st.deleted ? `<span class="v-badge-deleted" title="${esc(st.at || "")}">${st.prohibited ? "已封禁" : "已删除"}</span>` : ""}
+            ${esc(v.desc || "（无文案）")}
+          </div>
           <div class="video-meta">
             <span class="v-time">${esc(v.publishTime || "")}</span>
+            ${chapters.length ? `<span class="v-chip">AI章节 ${chapters.length}</span>` : ""}
+            ${transcript ? `<span class="v-chip v-chip-tr">口播转录 ${transcript.length} 字</span>` : ""}
             <a class="v-link" href="${esc(v.url)}" target="_blank" rel="noopener">原视频 ↗</a>
-            <span class="v-toggle">${cm.length} 条评论${authorReplies ? " · 作者回复 " + authorReplies : ""} <i>▾</i></span>
+            <span class="v-toggle">${cm.length} 条评论${authorReplies ? " · 作者回复 " + authorReplies : ""}${authorDiggs ? " · 博主赞 " + authorDiggs : ""} <i>▾</i></span>
           </div>
         `;
         card.appendChild(head);
+
+        // AI 章节
+        if (chapters.length) {
+          const ch = el("div", "video-chapters");
+          ch.innerHTML = `<div class="vc-title">AI 章节</div>` +
+            chapters.map((c, i) => `<div class="vc-item"><span class="vc-no">${i + 1}</span>${esc(c.title || "")}</div>`).join("");
+          card.appendChild(ch);
+        }
+
+        // 口播转录稿(默认折叠)
+        if (transcript) {
+          const tr = el("div", "video-transcript");
+          tr.innerHTML = `<div class="vt-toggle">口播转录全文 ${transcript.length} 字 <i>▾</i></div><div class="vt-body">${esc(transcript)}</div>`;
+          tr.querySelector(".vt-toggle").addEventListener("click", () => tr.classList.toggle("open"));
+          card.appendChild(tr);
+        }
+
         const cbox = el("div", "video-comments");
         if (cm.length) {
           cm.forEach(c => {
@@ -300,6 +345,7 @@
               <div class="c-head">
                 <span class="c-user">${esc(c.user || "匿名")}</span>
                 ${a ? '<span class="c-badge">作者</span>' : ""}
+                ${c.authorDigged ? '<span class="c-badge c-badge-digg">博主赞过</span>' : ""}
                 <span class="c-meta">${esc(c.time || "")}${c.location ? " · " + esc(c.location) : ""}${subCount ? " · " + subCount + " 条回复" : ""}</span>
               </div>
               <div class="c-content">${esc(c.content || "（无文字）")}</div>
@@ -313,6 +359,7 @@
                 rr.innerHTML = `
                   <span class="c-user">${esc(r.user || "匿名")}</span>
                   ${ra ? '<span class="c-badge">作者</span>' : ""}
+                  ${r.authorDigged ? '<span class="c-badge c-badge-digg">博主赞过</span>' : ""}
                   <span class="c-meta">${esc(r.time || "")}${r.location ? " · " + esc(r.location) : ""}</span>
                   <div class="c-content">${esc(r.content || "（无文字）")}</div>
                 `;

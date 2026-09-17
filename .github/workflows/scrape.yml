@@ -37,6 +37,28 @@ jobs:
           DOUYIN_COOKIES: ${{ secrets.DOUYIN_COOKIES }}
         run: node scrape-auto.js
 
+      - name: 安装 Python + 转录依赖
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 缓存 whisper 模型与 pip 包
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface
+            ~/.cache/pip
+          key: whisper-base-py311-v1
+
+      - name: 安装 faster-whisper (ffmpeg 已预装于 runner)
+        run: pip install --upgrade faster-whisper
+
+      - name: 语音转录
+        working-directory: scraper
+        env:
+          WHISPER_MODEL: base
+        run: python3 transcribe.py
+
       - name: 提交并推送数据
         run: |
           git config user.name "github-actions[bot]"

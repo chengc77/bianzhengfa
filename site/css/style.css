@@ -661,6 +661,70 @@ section.chapter > .intro {
   margin-top: 2px;
   font-size: 12.5px;
 }
+/* 视频短编号 / 状态徽章 / 标签 */
+.v-code {
+  font-family: var(--font-mono, "JetBrains Mono", monospace);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--vermilion);
+  background: rgba(168, 50, 50, 0.08);
+  border: 1px solid rgba(168, 50, 50, 0.25);
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-right: 8px;
+  white-space: nowrap;
+  vertical-align: 1px;
+}
+.v-badge-deleted {
+  font-size: 11px;
+  color: #888;
+  border: 1px solid #999;
+  border-radius: 3px;
+  padding: 0 5px;
+  margin-right: 8px;
+  vertical-align: 1px;
+}
+.video-card.is-deleted { opacity: 0.62; }
+.video-card.is-deleted .video-desc { text-decoration: line-through; text-decoration-color: #999; }
+.v-chip {
+  font-size: 11px;
+  color: var(--ink-faded);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+.v-chip-tr { color: #7a5c1f; border-color: rgba(180, 140, 60, 0.4); background: rgba(180, 140, 60, 0.06); }
+/* AI 章节 */
+.video-chapters {
+  padding: 8px 14px 4px;
+  font-size: 13px;
+  border-top: 1px dashed var(--line);
+}
+.vc-title { font-size: 11px; color: var(--ink-faded); margin-bottom: 4px; letter-spacing: 1px; }
+.vc-item { padding: 2px 0; color: var(--ink-soft, #555); }
+.vc-no {
+  display: inline-block; width: 18px; color: var(--vermilion);
+  font-family: var(--font-mono, monospace); font-size: 11px;
+}
+/* 口播转录 */
+.video-transcript { border-top: 1px dashed var(--line); }
+.vt-toggle {
+  padding: 7px 14px; font-size: 12.5px; color: #7a5c1f; cursor: pointer; user-select: none;
+}
+.vt-toggle:hover { background: rgba(180, 140, 60, 0.05); }
+.vt-body {
+  display: none; padding: 4px 14px 12px; font-size: 13.5px; line-height: 1.9;
+  color: var(--ink, #222); white-space: pre-wrap;
+}
+.video-transcript.open .vt-body { display: block; }
+.video-transcript.open .vt-toggle i { display: inline-block; transform: rotate(180deg); }
+/* 博主赞过徽章 */
+.c-badge-digg {
+  background: rgba(180, 140, 60, 0.12) !important;
+  color: #8a6a28 !important;
+  border: 1px solid rgba(180, 140, 60, 0.4) !important;
+}
 .archive-empty {
   padding: 24px;
   text-align: center;

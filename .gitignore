@@ -7,6 +7,9 @@ scraper/node_modules/
 # 日志(CI 控制台已可见, 不必入库)
 scraper/scrape.log
 
+# 转录队列含时效性签名直链, 不入库(每轮自动重建)
+site/data/transcript-queue.json
+
 # 系统杂项
 Thumbs.db
 .DS_Store

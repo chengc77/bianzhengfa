@@ -16,6 +16,11 @@ const SITE_DATA = path.join(ROOT, 'site', 'data');
 const URLS_FILE = path.join(SITE_DATA, 'video-urls.json');
 const AUTO_JSON = path.join(SITE_DATA, 'videos-auto.json');
 const AUTO_JS = path.join(SITE_DATA, 'videos-auto.js');
+const STATUS_JSON = path.join(SITE_DATA, 'video-status.json');
+const STATUS_JS = path.join(SITE_DATA, 'video-status.js');
+const CODES_JSON = path.join(SITE_DATA, 'video-codes.json');
+const CODES_JS = path.join(SITE_DATA, 'video-codes.js');
+const TRANS_QUEUE = path.join(SITE_DATA, 'transcript-queue.json');
 const PROFILE_DIR = path.join(__dirname, '.profile');
 const LOG_FILE = path.join(__dirname, 'scrape.log');
 
@@ -26,6 +31,8 @@ const MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleW
 const SCROLL_ROUNDS = 4;      // 主页滚动轮数(加载最新视频)
 const MAX_NEW_PER_RUN = 30;   // 单次最多抓取新视频数
 const COMMENT_SCROLLS = 3;    // 评论区滚动次数(多加载一些评论)
+const DELETE_CHECK_N = 15;    // 每轮抽查最近多少条存量视频做删除检测
+const CODE_START = 1001;      // 视频短编号起始值
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -76,8 +83,82 @@ function extractComment(c) {
     location: c.ip_label || '',
     likes: c.digg_count || 0,
     isAuthor,
+    authorDigged: !!c.is_author_digged,  // 博主点赞过这条评论
     replies: []
   };
+}
+
+// 从 aweme/detail JSON 提取: 删除状态/最低码率直链/AI 章节
+function extractDetail(d) {
+  if (!d) return null;
+  const st = d.status || {};
+  const v = d.video || {};
+  // 选最低码率档位(转录只需要音轨, 省带宽)
+  let playUrl = '';
+  const gears = (v.bit_rate || []).filter(g => g.play_addr && g.play_addr.url_list && g.play_addr.url_list[0]);
+  if (gears.length) {
+    gears.sort((a, b) => (a.bit_rate || 0) - (b.bit_rate || 0));
+    playUrl = gears[0].play_addr.url_list[0];
+  } else if (v.play_addr && v.play_addr.url_list && v.play_addr.url_list[0]) {
+    playUrl = v.play_addr.url_list[0];
+  }
+  // AI 章节: chapter_list[0].chapters = [{content, start_time, end_time}]
+  let chapters = [];
+  try {
+    const raw = (d.chapter_list && d.chapter_list[0] && d.chapter_list[0].chapters) || [];
+    chapters = raw.map(ch => ({
+      title: ch.content || ch.title || '',
+      start: ch.start_time || 0
+    })).filter(ch => ch.title);
+  } catch (e) { /* 忽略 */ }
+  return {
+    deleted: !!(st.is_delete || st.is_prohibited),
+    prohibited: !!st.is_prohibited,
+    subtitled: !!d.is_subtitled,
+    playUrl,
+    chapters
+  };
+}
+
+// 扫描站点所有视频数据文件, 按 id 升序(≈发布时间序)分配稳定短编号
+// 输出 video-codes.json {map:{id:code}} + video-codes.js (前端)
+function rebuildVideoCodes() {
+  const prev = readJson(CODES_JSON, { map: {} });
+  const idSet = new Set();
+  // 自动抓取存档
+  for (const v of readJson(AUTO_JSON, [])) { if (v.id) idSet.add(String(v.id)); }
+  // 首批手动数据(videos.js + videos-batch*.js), 解析其中的数组字面量
+  // 兼容严格 JSON(键带引号) 与 JS 对象字面量(键无引号, 仅解析本站自有可信数据)
+  const parseArray = (s) => { try { return JSON.parse(s); } catch (e) { return new Function('return ' + s)(); } };
+  for (const name of fs.readdirSync(SITE_DATA)) {
+    if (!/^videos(-batch\d+)?\.js$/.test(name)) continue;
+    try {
+      const txt = fs.readFileSync(path.join(SITE_DATA, name), 'utf8');
+      const m = txt.match(/(\[[\s\S]*\])\s*\)?\s*;?\s*$/);
+      if (m) for (const v of parseArray(m[1])) { if (v.id) idSet.add(String(v.id)); }
+    } catch (e) { /* 单个文件解析失败不影响 */ }
+  }
+  // 已分配编号优先保留(稳定), 新 id 按序追加
+  const map = {};
+  const used = new Set();
+  for (const [id, code] of Object.entries(prev.map || {})) {
+    if (idSet.has(id)) { map[id] = code; used.add(code); }
+  }
+  let next = CODE_START;
+  [...idSet].sort().forEach(id => {
+    if (map[id]) return;
+    while (used.has(next)) next++;
+    map[id] = next; used.add(next); next++;
+  });
+  fs.writeFileSync(CODES_JSON, JSON.stringify({ map }, null, 1), 'utf8');
+  fs.writeFileSync(CODES_JS, '// video-codes.js - 视频短编号映射(自动生成, 勿手改)\nwindow.MOXING_CODES = ' + JSON.stringify(map) + ';\n', 'utf8');
+  return map;
+}
+
+// 删除状态写入 json + js
+function writeVideoStatus(statusMap) {
+  fs.writeFileSync(STATUS_JSON, JSON.stringify(statusMap, null, 1), 'utf8');
+  fs.writeFileSync(STATUS_JS, '// video-status.js - 视频删除/封禁状态(自动生成, 勿手改)\nwindow.MOXING_STATUS = ' + JSON.stringify(statusMap) + ';\n', 'utf8');
 }
 
 // 从拦截到的 API 数据构建结构化评论树(主评论 + 嵌套子回复)
@@ -281,30 +362,34 @@ async function scrapeMode() {
     const newIds = ids.filter(id => !known.has(id)).slice(0, MAX_NEW_PER_RUN);
     log(`共 ${ids.length} 个链接, 其中新视频 ${newIds.length} 个: ${newIds.join(', ') || '(无)'}`);
 
-    if (!newIds.length) {
-      log('没有新视频, 任务结束。');
-      return;
-    }
-
-    // 2. 逐个访问新视频, 抓文案+发布时间+评论(通过 API 拦截)
+    const statusMap = readJson(STATUS_JSON, {});
+    const transQueue = []; // 本轮拿到新鲜直链、待转录的视频
     const results = [];
+
+    if (newIds.length) {
+    // 2. 逐个访问新视频, 抓文案+发布时间+评论(通过 API 拦截)
     for (const id of newIds) {
       const url = 'https://www.douyin.com/video/' + id;
       try {
-        // 拦截评论 API 响应(主评论 + 子回复)
+        // 拦截评论 API + 视频详情 API
         const mainComments = [];
         const replyComments = [];
+        let detailInfo = null;
         const onResp = async resp => {
           const u = resp.url();
-          if (!u.includes('/comment/list')) return;
           try {
-            const j = await resp.json();
-            if (!j.comments) return;
-            if (u.includes('/reply/')) {
-              replyComments.push(...j.comments);
-              log(`  子回复 API: ${j.comments.length} 条, has_more=${j.has_more}`);
-            } else {
-              mainComments.push(...j.comments);
+            if (u.includes('/comment/list')) {
+              const j = await resp.json();
+              if (!j.comments) return;
+              if (u.includes('/reply/')) {
+                replyComments.push(...j.comments);
+                log(`  子回复 API: ${j.comments.length} 条, has_more=${j.has_more}`);
+              } else {
+                mainComments.push(...j.comments);
+              }
+            } else if (u.includes('/aweme/v1/web/aweme/detail')) {
+              const j = await resp.json();
+              if (j.aweme_detail) detailInfo = extractDetail(j.aweme_detail);
             }
           } catch (e) { /* 非 JSON 响应, 忽略 */ }
         };
@@ -375,40 +460,98 @@ async function scrapeMode() {
           log(`已抓取 ${id}: DOM 解析 ${comments.length} 条评论(API 拦截失败)`);
         }
 
+        // 记录删除/封禁状态(只有拿到明确 detail 才写, 风控失败不误判)
+        if (detailInfo) {
+          statusMap[id] = { deleted: detailInfo.deleted, prohibited: detailInfo.prohibited, at: new Date().toISOString().slice(0, 10) };
+        }
+
         results.push({
           id, url,
           desc: data.desc,
           publishTime: data.pubTime.replace('发布时间：', ''),
+          chapters: detailInfo ? detailInfo.chapters : [],
           comments
         });
+        // 有新鲜直链 → 入转录队列(没有转录稿的才需要)
+        if (detailInfo && detailInfo.playUrl) {
+          transQueue.push({ id, url: detailInfo.playUrl, subtitled: detailInfo.subtitled });
+        }
       } catch (e) {
         log(`抓取失败 ${id}: ${e.message.slice(0, 120)}`);
       }
     }
-
-    if (!results.length) {
-      log('本次没有成功抓取任何视频, 不写入数据。');
-      return;
-    }
+    } // end if (newIds.length)
 
     // 3. 写入数据: auto json 按时间倒序合并, 再生成 js
-    const merged = [...results, ...autoStore];
-    const seen = new Set();
-    const uniq = merged.filter(v => (v.id && !seen.has(v.id)) ? (seen.add(v.id), true) : false);
-    uniq.sort((a, b) => String(b.publishTime || '').localeCompare(String(a.publishTime || '')));
+    if (results.length) {
+      const merged = [...results, ...autoStore];
+      const seen = new Set();
+      const uniq = merged.filter(v => (v.id && !seen.has(v.id)) ? (seen.add(v.id), true) : false);
+      uniq.sort((a, b) => String(b.publishTime || '').localeCompare(String(a.publishTime || '')));
 
-    fs.writeFileSync(AUTO_JSON, JSON.stringify(uniq, null, 1), 'utf8');
-    const js = '// videos-auto.js - 自动抓取的新视频(由 scraper/scrape-auto.js 生成, 勿手改)\n'
-      + 'window.MOXING_VIDEOS = window.MOXING_VIDEOS.concat(' + JSON.stringify(uniq) + ');\n';
-    fs.writeFileSync(AUTO_JS, js, 'utf8');
+      fs.writeFileSync(AUTO_JSON, JSON.stringify(uniq, null, 1), 'utf8');
+      const js = '// videos-auto.js - 自动抓取的新视频(由 scraper/scrape-auto.js 生成, 勿手改)\n'
+        + 'window.MOXING_VIDEOS = window.MOXING_VIDEOS.concat(' + JSON.stringify(uniq) + ');\n';
+      fs.writeFileSync(AUTO_JS, js, 'utf8');
 
-    // 4. 更新 video-urls.json (新 id 插到最前, 保持去重)
-    const raw = readJson(URLS_FILE, []);
-    const rawIds = new Set(raw.map(u => (u.match(/(\d{15,})/) || [])[0]).filter(Boolean));
-    const addUrls = results.map(r => '/video/' + r.id).filter(u => !rawIds.has(u.match(/\d+/)[0]));
-    fs.writeFileSync(URLS_FILE, JSON.stringify([...addUrls, ...raw], null, 2), 'utf8');
+      // 更新 video-urls.json (新 id 插到最前, 保持去重)
+      const raw = readJson(URLS_FILE, []);
+      const rawIds = new Set(raw.map(u => (u.match(/(\d{15,})/) || [])[0]).filter(Boolean));
+      const addUrls = results.map(r => '/video/' + r.id).filter(u => !rawIds.has(u.match(/\d+/)[0]));
+      fs.writeFileSync(URLS_FILE, JSON.stringify([...addUrls, ...raw], null, 2), 'utf8');
 
-    log(`完成: 新增 ${results.length} 条视频, 存档共 ${uniq.length} 条。`);
+      log(`完成: 新增 ${results.length} 条视频, 存档共 ${uniq.length} 条。`);
+    } else {
+      log('本轮无新视频入库。');
+    }
+
+    // 4. 删除追踪: 抽查最近 N 条存量视频(已标删除的跳过), 顺带刷新转录直链
+    const storeNow = readJson(AUTO_JSON, []);
+    const candidates = storeNow
+      .filter(v => v.id && !(statusMap[String(v.id)] || {}).deleted)
+      .slice(0, DELETE_CHECK_N);
+    if (candidates.length) {
+      log(`删除检测: 抽查 ${candidates.length} 条存量视频...`);
+      let deletedFound = 0;
+      for (const v of candidates) {
+        let detailInfo = null;
+        const onResp2 = async resp => {
+          if (!resp.url().includes('/aweme/v1/web/aweme/detail')) return;
+          try {
+            const j = await resp.json();
+            if (j.aweme_detail) detailInfo = extractDetail(j.aweme_detail);
+          } catch (e) {}
+        };
+        page.on('response', onResp2);
+        try {
+          await page.goto('https://www.douyin.com/video/' + v.id, { waitUntil: 'domcontentloaded', timeout: 45000 });
+          await sleep(IS_CI ? 4000 : 2500);
+        } catch (e) { /* 单条失败忽略 */ }
+        page.off('response', onResp2);
+        if (detailInfo) {
+          const sid = String(v.id);
+          const prev = statusMap[sid] || {};
+          if (detailInfo.deleted && !prev.deleted) {
+            statusMap[sid] = { deleted: true, prohibited: detailInfo.prohibited, at: new Date().toISOString().slice(0, 10) };
+            deletedFound++;
+            log(`  ⚠ 视频 ${sid} 已${detailInfo.prohibited ? '封禁' : '删除'}`);
+          } else if (!prev.checkedAt) {
+            statusMap[sid] = { deleted: false, checkedAt: new Date().toISOString().slice(0, 10) };
+          }
+          // 缺转录稿 + 拿到新鲜直链 → 补入转录队列
+          if (detailInfo.playUrl && !v.transcript && !transQueue.some(q => q.id === v.id)) {
+            transQueue.push({ id: v.id, url: detailInfo.playUrl, subtitled: detailInfo.subtitled });
+          }
+        }
+      }
+      log(`删除检测完成: 新发现删除/封禁 ${deletedFound} 条。`);
+    }
+
+    // 5. 写删除状态 + 重建短编号 + 转录队列
+    writeVideoStatus(statusMap);
+    const codeMap = rebuildVideoCodes();
+    fs.writeFileSync(TRANS_QUEUE, JSON.stringify(transQueue, null, 1), 'utf8');
+    log(`编号映射 ${Object.keys(codeMap).length} 条; 转录队列 ${transQueue.length} 条。`);
   } finally {
     await browser.close();
   }
