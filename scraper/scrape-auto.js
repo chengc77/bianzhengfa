@@ -8,7 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const IS_CI = !!(process.env.GITHUB_ACTIONS || process.env.CI);
+const IS_CI = !!process.env.GITHUB_ACTIONS;  // 只认 GitHub Actions, 避免沙箱 CI 变量误判
 const { chromium } = require(IS_CI ? 'playwright' : 'playwright-core');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -39,7 +39,7 @@ function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { return fallback; }
 }
 
-// 与网站同一套评论解析逻辑
+// 与网站同一套评论解析逻辑(旧格式兼容, 用于旧数据)
 function parseComment(t) {
   const di = t.indexOf('...');
   const user = di >= 0 ? t.slice(0, di) : '';
@@ -50,14 +50,51 @@ function parseComment(t) {
   const time = m ? m[1] : '';
   const location = m ? m[2] : '';
   const content = mIdx >= 0 ? rest.slice(0, mIdx).trim() : rest;
-  const afterMatch = mIdx >= 0 ? rest.slice(mIdx + (m ? m[0].length : 0)).trim() : '';
-  const subIdx = afterMatch.lastIndexOf('展开');
-  let subReplies = 0;
-  if (subIdx >= 0) {
-    const sm = afterMatch.slice(subIdx + 2).trim().match(/(\d+)/);
-    if (sm) subReplies = parseInt(sm[1], 10);
+  return { user, content, time, location, shares: 0, subReplies: 0 };
+}
+
+// Unix 时间戳 -> 相对时间(与抖音显示一致)
+function formatTime(ts) {
+  if (!ts) return '';
+  const diff = Date.now() / 1000 - ts;
+  if (diff < 60) return Math.max(1, Math.floor(diff)) + '秒前';
+  if (diff < 3600) return Math.floor(diff / 60) + '分钟前';
+  if (diff < 86400) return Math.floor(diff / 3600) + '小时前';
+  if (diff < 604800) return Math.floor(diff / 86400) + '天前';
+  if (diff < 2592000) return Math.floor(diff / 604800) + '周前';
+  if (diff < 31536000) return Math.floor(diff / 2592000) + '月前';
+  return Math.floor(diff / 31536000) + '年前';
+}
+
+// 从 API JSON 提取一条评论(主评论或子回复通用)
+function extractComment(c) {
+  const isAuthor = c.user && c.user.sec_uid === SEC_UID;
+  return {
+    user: c.user ? c.user.nickname : '',
+    content: c.text || '',
+    time: formatTime(c.create_time),
+    location: c.ip_label || '',
+    likes: c.digg_count || 0,
+    isAuthor,
+    replies: []
+  };
+}
+
+// 从拦截到的 API 数据构建结构化评论树(主评论 + 嵌套子回复)
+function buildCommentTree(mainList, replyList) {
+  const replyMap = new Map(); // root_comment_id -> replies[]
+  for (const r of replyList) {
+    const root = r.root_comment_id || r.reply_id;
+    if (!replyMap.has(root)) replyMap.set(root, []);
+    replyMap.get(root).push(r);
   }
-  return { user, content, time, location, shares: 0, subReplies };
+  return mainList.map(c => {
+    const cm = extractComment(c);
+    const replies = (replyMap.get(c.cid) || []).map(extractComment);
+    cm.replies = replies;
+    cm.subReplies = replies.length;
+    return cm;
+  });
 }
 
 async function isLoggedIn(browser) {
@@ -249,16 +286,35 @@ async function scrapeMode() {
       return;
     }
 
-    // 2. 逐个访问新视频, 抓文案+发布时间+评论
+    // 2. 逐个访问新视频, 抓文案+发布时间+评论(通过 API 拦截)
     const results = [];
     for (const id of newIds) {
       const url = 'https://www.douyin.com/video/' + id;
       try {
+        // 拦截评论 API 响应(主评论 + 子回复)
+        const mainComments = [];
+        const replyComments = [];
+        const onResp = async resp => {
+          const u = resp.url();
+          if (!u.includes('/comment/list')) return;
+          try {
+            const j = await resp.json();
+            if (!j.comments) return;
+            if (u.includes('/reply/')) {
+              replyComments.push(...j.comments);
+              log(`  子回复 API: ${j.comments.length} 条, has_more=${j.has_more}`);
+            } else {
+              mainComments.push(...j.comments);
+            }
+          } catch (e) { /* 非 JSON 响应, 忽略 */ }
+        };
+        page.on('response', onResp);
+
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-        await sleep(3500);
+        await sleep(IS_CI ? 5000 : 3500);
         await dismissLoginPopup(page);
 
-        // 滚动评论区加载更多
+        // 滚动评论区加载更多主评论
         for (let c = 0; c < COMMENT_SCROLLS; c++) {
           await page.evaluate(() => {
             const list = document.querySelector('[data-e2e=comment-list]');
@@ -268,39 +324,63 @@ async function scrapeMode() {
           await sleep(1500);
         }
 
-        const data = await page.evaluate(() => {
-          const SEC = 'MS4wLjABAAAAK713M9d8PGNb_WiMYf7yKhOI5y60H4uELJK2guDjJT0';
+        // 展开有子回复的评论, 触发子回复 API (作者回复常在此)
+        const expandBtns = await page.locator('[data-e2e=comment-item] button').all();
+        let expanded = 0;
+        for (const btn of expandBtns) {
+          const txt = (await btn.textContent().catch(() => '')).trim();
+          if (txt.includes('展开') && txt.includes('回复')) {
+            await btn.click({ timeout: 5000 }).catch(() => {});
+            await sleep(2500);
+            expanded++;
+            if (expanded >= 10) break; // 限制展开数避免太慢
+          }
+        }
+        if (expanded) log(`  展开了 ${expanded} 条评论的子回复`);
+
+        page.off('response', onResp);
+
+        const data = await page.evaluate((secUid) => {
           const descEl = document.querySelector('div.desc');
           const pubEl = document.querySelector('[data-e2e=detail-video-publish-time]');
-          const items = document.querySelectorAll('[data-e2e=comment-item]');
-          const comments = [];
-          for (const it of items) comments.push(it.textContent.replace(/\s+/g, ' ').trim());
-          // 校验视频作者: 页面非评论区处存在指向博主主页的链接才算博主的视频
           let isAuthor = false;
-          document.querySelectorAll('a[href*="' + SEC + '"]').forEach(a => {
+          document.querySelectorAll('a[href*="' + secUid + '"]').forEach(a => {
             if (!a.closest('[data-e2e=comment-list]')) isAuthor = true;
           });
           return {
             isAuthor,
             desc: descEl ? descEl.textContent.trim() : '',
-            pubTime: pubEl ? pubEl.textContent.trim() : '',
-            comments
+            pubTime: pubEl ? pubEl.textContent.trim() : ''
           };
-        });
+        }, SEC_UID);
 
         if (!data.isAuthor) {
           log(`跳过 ${id}: 不是博主的作品(推荐流混入)`);
           continue;
         }
 
+        // 从 API 数据构建结构化评论树(含作者回复 isAuthor 标记)
+        let comments;
+        if (mainComments.length > 0) {
+          comments = buildCommentTree(mainComments, replyComments);
+          const authorReplies = comments.reduce((s, c) => s + (c.replies || []).filter(r => r.isAuthor).length, 0);
+          log(`已抓取 ${id}: 主评论 ${mainComments.length} 条, 子回复 ${replyComments.length} 条, 作者回复 ${authorReplies} 条`);
+        } else {
+          // API 拦截失败时退回 DOM 解析
+          const rawTexts = await page.evaluate(() => {
+            const items = document.querySelectorAll('[data-e2e=comment-item]');
+            return [...items].map(it => it.textContent.replace(/\s+/g, ' ').trim());
+          });
+          comments = rawTexts.map(parseComment);
+          log(`已抓取 ${id}: DOM 解析 ${comments.length} 条评论(API 拦截失败)`);
+        }
+
         results.push({
-          id,
-          url,
+          id, url,
           desc: data.desc,
           publishTime: data.pubTime.replace('发布时间：', ''),
-          comments: data.comments.map(parseComment)
+          comments
         });
-        log(`已抓取 ${id}: 评论 ${data.comments.length} 条`);
       } catch (e) {
         log(`抓取失败 ${id}: ${e.message.slice(0, 120)}`);
       }

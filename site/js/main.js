@@ -275,7 +275,9 @@
       }
       shown.forEach(v => {
         const cm = v.comments || [];
-        const authorReplies = cm.filter(c => /模型先生/.test(String(c.user))).length;
+        // 作者回复计数: 主评论或子回复中 isAuthor 为 true 的(兼容旧数据用用户名匹配)
+        const isAuth = c => c.isAuthor || /模型先生/.test(String(c.user));
+        const authorReplies = cm.reduce((s, c) => s + (isAuth(c) ? 1 : 0) + ((c.replies || []).filter(isAuth).length), 0);
         const card = el("div", "video-card");
         const head = el("div", "video-head");
         head.innerHTML = `
@@ -290,16 +292,34 @@
         const cbox = el("div", "video-comments");
         if (cm.length) {
           cm.forEach(c => {
-            const isAuthor = /模型先生/.test(String(c.user));
-            const row = el("div", "comment" + (isAuthor ? " author" : ""));
+            const a = isAuth(c);
+            const row = el("div", "comment" + (a ? " author" : ""));
+            const replies = c.replies || [];
+            const subCount = c.subReplies || replies.length;
             row.innerHTML = `
               <div class="c-head">
                 <span class="c-user">${esc(c.user || "匿名")}</span>
-                ${isAuthor ? '<span class="c-badge">作者</span>' : ""}
-                <span class="c-meta">${esc(c.time || "")}${c.location ? " · " + esc(c.location) : ""}${c.subReplies ? " · " + c.subReplies + " 条回复" : ""}</span>
+                ${a ? '<span class="c-badge">作者</span>' : ""}
+                <span class="c-meta">${esc(c.time || "")}${c.location ? " · " + esc(c.location) : ""}${subCount ? " · " + subCount + " 条回复" : ""}</span>
               </div>
               <div class="c-content">${esc(c.content || "（无文字）")}</div>
             `;
+            // 渲染子回复(嵌套)
+            if (replies.length) {
+              const rbox = el("div", "c-replies");
+              replies.forEach(r => {
+                const ra = isAuth(r);
+                const rr = el("div", "c-reply" + (ra ? " author" : ""));
+                rr.innerHTML = `
+                  <span class="c-user">${esc(r.user || "匿名")}</span>
+                  ${ra ? '<span class="c-badge">作者</span>' : ""}
+                  <span class="c-meta">${esc(r.time || "")}${r.location ? " · " + esc(r.location) : ""}</span>
+                  <div class="c-content">${esc(r.content || "（无文字）")}</div>
+                `;
+                rbox.appendChild(rr);
+              });
+              row.appendChild(rbox);
+            }
             cbox.appendChild(row);
           });
         } else {
