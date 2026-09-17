@@ -161,6 +161,34 @@ function writeVideoStatus(statusMap) {
   fs.writeFileSync(STATUS_JS, '// video-status.js - 视频删除/封禁状态(自动生成, 勿手改)\nwindow.MOXING_STATUS = ' + JSON.stringify(statusMap) + ';\n', 'utf8');
 }
 
+// 移动分享页 SSR 兜底: 数据中心 IP 下 PC detail 易被风控, 分享页 reflow 更宽松
+// 返回 { deleted, playUrl(playwm水印直链, 仅供提音频), durationSec } 或 null
+async function checkViaSharePage(page, id) {
+  try {
+    await page.goto('https://www.iesdouyin.com/share/video/' + id, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    // 等 SSR 数据就绪
+    const data = await page.waitForFunction(() => {
+      try {
+        const p = window._ROUTER_DATA && window._ROUTER_DATA.loaderData && window._ROUTER_DATA.loaderData['video_(id)/page'];
+        return p && p.videoInfoRes ? p.videoInfoRes : null;
+      } catch (e) { return null; }
+    }, { timeout: 12000 }).then(h => h.jsonValue()).catch(() => null);
+    if (!data) return null;
+    const item = (data.item_list || [])[0];
+    if (data.status_code !== 0 || !item) {
+      return { deleted: true, playUrl: '', durationSec: 0, code: data.status_code };
+    }
+    const playUrl = item.video && item.video.play_addr && item.video.play_addr.url_list && item.video.play_addr.url_list[0] || '';
+    return {
+      deleted: false,
+      playUrl,
+      durationSec: (item.video && item.video.duration ? item.video.duration : 0) / 1000
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
 // 从拦截到的 API 数据构建结构化评论树(主评论 + 嵌套子回复)
 function buildCommentTree(mainList, replyList) {
   const replyMap = new Map(); // root_comment_id -> replies[]
@@ -505,49 +533,52 @@ async function scrapeMode() {
       log('本轮无新视频入库。');
     }
 
-    // 4. 删除追踪: 每轮选最久未检测的 N 条(删除的永久跳过), 顺带刷新转录直链
+    // 4. 删除追踪: 疑似下架优先(尽快二次确认), 其余按最久未检测轮换; 已确认删除的跳过
     const storeNow = readJson(AUTO_JSON, []);
     const candidates = storeNow
-      .map(v => ({ v, t: (statusMap[String(v.id)] || {}).checkedAt || (statusMap[String(v.id)] || {}).at || '' }))
-      .filter(o => o.v.id && !(statusMap[String(o.v.id)] || {}).deleted)
-      .sort((a, b) => a.t.localeCompare(b.t))
+      .map(v => ({ v, st: statusMap[String(v.id)] || {} }))
+      .filter(o => o.v.id && !o.st.deleted)
+      .sort((a, b) => {
+        if (!!a.st.suspect !== !!b.st.suspect) return a.st.suspect ? -1 : 1;
+        return (a.st.checkedAt || '').localeCompare(b.st.checkedAt || '');
+      })
       .slice(0, DELETE_CHECK_N)
       .map(o => o.v);
     if (candidates.length) {
-      log(`删除检测: 抽查 ${candidates.length} 条存量视频...`);
-      let deletedFound = 0;
+      log(`删除检测: 轮换 ${candidates.length} 条(移动分享页)...`);
+      // 分享页阶段统一用移动 UA
+      const cdp = await page.context().newCDPSession(page);
+      await cdp.send('Emulation.setUserAgentOverride', { userAgent: MOBILE_UA });
+      let deletedFound = 0, linkOk = 0, failed = 0;
       for (const v of candidates) {
-        let detailInfo = null;
-        const onResp2 = async resp => {
-          if (!resp.url().includes('/aweme/v1/web/aweme/detail')) return;
-          try {
-            const j = await resp.json();
-            if (j.aweme_detail) detailInfo = extractDetail(j.aweme_detail);
-          } catch (e) {}
-        };
-        page.on('response', onResp2);
-        try {
-          await page.goto('https://www.douyin.com/video/' + v.id, { waitUntil: 'domcontentloaded', timeout: 45000 });
-          await sleep(IS_CI ? 4000 : 2500);
-        } catch (e) { /* 单条失败忽略 */ }
-        page.off('response', onResp2);
-        if (detailInfo) {
-          const sid = String(v.id);
-          const prev = statusMap[sid] || {};
-          if (detailInfo.deleted && !prev.deleted) {
-            statusMap[sid] = { deleted: true, prohibited: detailInfo.prohibited, at: new Date().toISOString().slice(0, 10) };
+        const info = await checkViaSharePage(page, v.id);
+        if (!info) { failed++; continue; }
+        const sid = String(v.id);
+        const prev = statusMap[sid] || {};
+        const today = new Date().toISOString().slice(0, 10);
+        if (info.deleted) {
+          // 二次确认: 首次只记疑似, 再次检测仍无 item 才判删除(防风控页误判)
+          if (prev.suspect) {
+            statusMap[sid] = { deleted: true, at: prev.suspectAt || today, confirmedAt: today };
             deletedFound++;
-            log(`  ⚠ 视频 ${sid} 已${detailInfo.prohibited ? '封禁' : '删除'}`);
-          } else if (!detailInfo.deleted) {
-            statusMap[sid] = Object.assign({}, prev, { deleted: false, checkedAt: new Date().toISOString().slice(0, 10) });
+            log(`  ⚠ 视频 ${sid} 二次确认已删除/下架`);
+          } else if (!prev.deleted) {
+            statusMap[sid] = { deleted: false, suspect: true, suspectAt: today, checkedAt: today };
+            log(`  ? 视频 ${sid} 疑似下架, 下轮二次确认`);
           }
-          // 缺转录稿 + 拿到新鲜直链 → 补入转录队列
-          if (detailInfo.playUrl && !v.transcript && !transQueue.some(q => q.id === v.id)) {
-            transQueue.push({ id: v.id, url: detailInfo.playUrl, subtitled: detailInfo.subtitled });
+        } else {
+          statusMap[sid] = { deleted: false, checkedAt: today };
+          // 缺转录稿 + 拿到 playwm 直链 + 时长在限制内 → 转录队列
+          if (info.playUrl && !v.transcript && !transQueue.some(q => q.id === v.id)
+              && info.durationSec <= 1200 && info.durationSec > 0) {
+            transQueue.push({ id: v.id, url: info.playUrl });
+            linkOk++;
           }
         }
+        await sleep(800);
       }
-      log(`删除检测完成: 新发现删除/封禁 ${deletedFound} 条。`);
+      await cdp.send('Emulation.clearUserAgentOverride').catch(() => {});
+      log(`删除检测完成: 删除/下架 ${deletedFound} 条, 新转录链接 ${linkOk} 条, 失败 ${failed} 条。`);
     }
 
     // 5. 写删除状态 + 重建短编号 + 转录队列

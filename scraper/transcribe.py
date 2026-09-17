@@ -83,7 +83,7 @@ def main():
             log(f"下载并提取音频 {vid} ...")
             r = subprocess.run(
                 ["ffmpeg", "-y", "-nostdin", "-loglevel", "error",
-                 "-headers", "Referer: https://www.douyin.com/\r\n",
+                 "-user_agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
                  "-i", url, "-vn", "-ac", "1", "-ar", "16000", wav],
                 capture_output=True, check=False)
             if r.returncode != 0 or not os.path.exists(wav):

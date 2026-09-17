@@ -684,8 +684,19 @@ section.chapter > .intro {
   margin-right: 8px;
   vertical-align: 1px;
 }
+.v-badge-suspect {
+  font-size: 11px;
+  color: #8a6a28;
+  border: 1px solid rgba(180, 140, 60, 0.6);
+  background: rgba(180, 140, 60, 0.08);
+  border-radius: 3px;
+  padding: 0 5px;
+  margin-right: 8px;
+  vertical-align: 1px;
+}
 .video-card.is-deleted { opacity: 0.62; }
 .video-card.is-deleted .video-desc { text-decoration: line-through; text-decoration-color: #999; }
+.video-card.is-suspect { border-left-color: rgba(180, 140, 60, 0.5); }
 .v-chip {
   font-size: 11px;
   color: var(--ink-faded);

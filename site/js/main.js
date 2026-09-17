@@ -300,12 +300,12 @@
         const chapters = v.chapters || [];
         const transcript = v.transcript || "";
 
-        const card = el("div", "video-card" + (st.deleted ? " is-deleted" : ""));
+        const card = el("div", "video-card" + (st.deleted ? " is-deleted" : st.suspect ? " is-suspect" : ""));
         const head = el("div", "video-head");
         head.innerHTML = `
           <div class="video-desc">
             ${code ? `<span class="v-code">#${code}</span>` : ""}
-            ${st.deleted ? `<span class="v-badge-deleted" title="${esc(st.at || "")}">${st.prohibited ? "已封禁" : "已删除"}</span>` : ""}
+            ${st.deleted ? `<span class="v-badge-deleted" title="${esc(st.at || "")}">已删除</span>` : st.suspect ? '<span class="v-badge-suspect" title="检测到视频不存在，待二次确认">疑似下架</span>' : ""}
             ${esc(v.desc || "（无文案）")}
           </div>
           <div class="video-meta">
