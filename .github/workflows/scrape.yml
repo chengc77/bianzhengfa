@@ -33,6 +33,8 @@ jobs:
 
       - name: 运行抓取
         working-directory: scraper
+        env:
+          DOUYIN_COOKIES: ${{ secrets.DOUYIN_COOKIES }}
         run: node scrape-auto.js
 
       - name: 提交并推送数据

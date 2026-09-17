@@ -75,6 +75,16 @@ async function openScrapeBrowser() {
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
       locale: 'zh-CN'
     });
+    // 注入登录态 (GitHub Secret DOUYIN_COOKIES, 由本地 scraper/push-cookies.js 生成更新)
+    if (process.env.DOUYIN_COOKIES) {
+      try {
+        const cookies = JSON.parse(Buffer.from(process.env.DOUYIN_COOKIES, 'base64').toString('utf8'));
+        await ctx.addCookies(cookies);
+        log(`已注入登录态 cookie ${cookies.length} 条`);
+      } catch (e) {
+        log('注入 cookie 失败: ' + (e && e.message ? e.message.slice(0, 100) : e));
+      }
+    }
     return {
       pages: () => ctx.pages(),
       newPage: () => ctx.newPage(),
