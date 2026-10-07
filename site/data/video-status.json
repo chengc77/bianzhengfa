@@ -1,9 +1,8 @@
 {
  "7686408682045787569": {
-  "deleted": false,
-  "suspect": true,
-  "suspectAt": "2026-10-07",
-  "checkedAt": "2026-10-07"
+  "deleted": true,
+  "at": "2026-10-07",
+  "confirmedAt": "2026-10-07"
  },
  "7686399394883510139": {
   "deleted": true,
@@ -97,35 +96,37 @@
  },
  "7679306956389042417": {
   "deleted": false,
-  "checkedAt": "2026-10-06"
+  "checkedAt": "2026-10-07"
  },
  "7678620044482344635": {
   "deleted": false,
-  "checkedAt": "2026-10-06"
+  "suspect": true,
+  "suspectAt": "2026-10-07",
+  "checkedAt": "2026-10-07"
  },
  "7676667495483541427": {
   "deleted": false,
-  "checkedAt": "2026-10-06"
+  "checkedAt": "2026-10-07"
  },
  "7674423975678030758": {
   "deleted": false,
-  "checkedAt": "2026-10-06"
+  "checkedAt": "2026-10-07"
  },
  "7674168772814676657": {
   "deleted": false,
-  "checkedAt": "2026-10-06"
+  "checkedAt": "2026-10-07"
  },
  "7671593749469947505": {
   "deleted": false,
-  "checkedAt": "2026-10-06"
+  "checkedAt": "2026-10-07"
  },
  "7671452286241097137": {
   "deleted": false,
-  "checkedAt": "2026-10-06"
+  "checkedAt": "2026-10-07"
  },
  "7671183331950595195": {
   "deleted": false,
-  "checkedAt": "2026-10-06"
+  "checkedAt": "2026-10-07"
  },
  "7670814423157717998": {
   "deleted": false,
@@ -153,7 +154,7 @@
  },
  "7671834569137647601": {
   "deleted": false,
-  "checkedAt": "2026-10-06"
+  "checkedAt": "2026-10-07"
  },
  "7668963922510721226": {
   "deleted": false,
@@ -281,7 +282,7 @@
  },
  "7672339420096779953": {
   "deleted": false,
-  "checkedAt": "2026-10-06"
+  "checkedAt": "2026-10-07"
  },
  "7655460787654329009": {
   "deleted": false,
@@ -394,9 +395,8 @@
   "confirmedAt": "2026-09-19"
  },
  "7687082512254068187": {
-  "deleted": false,
-  "suspect": true,
-  "suspectAt": "2026-10-07",
-  "checkedAt": "2026-10-07"
+  "deleted": true,
+  "at": "2026-10-07",
+  "confirmedAt": "2026-10-07"
  }
 }
